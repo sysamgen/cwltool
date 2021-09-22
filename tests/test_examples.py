@@ -5,6 +5,7 @@ import re
 import stat
 import subprocess
 import sys
+import shutil
 from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Union, cast
@@ -412,7 +413,9 @@ def test_scandeps() -> None:
         ],
     }
 
-    def loadref(base: str, p: str) -> Union[CommentedMap, CommentedSeq, str, None]:
+    def loadref(
+        base: str, p: Union[CommentedMap, CommentedSeq, str, None]
+    ) -> Union[CommentedMap, CommentedSeq, str, None]:
         if isinstance(p, dict):
             return p
         raise Exception("test case can't load things")
@@ -1222,23 +1225,20 @@ def test_secondary_files_bad_v1_1(factor: str) -> None:
 
 @needs_docker
 @pytest.mark.parametrize("factor", test_factors)
-def test_secondary_files_v1_0(factor: str) -> None:
+def test_secondary_files_v1_0(tmp_path: Path, factor: str) -> None:
+    """Test plain strings under "secondaryFiles"."""
     test_file = "secondary-files-string-v1.cwl"
     test_job_file = "secondary-files-job.yml"
-    try:
-        old_umask = os.umask(stat.S_IWOTH)  # test run with umask 002
-        commands = factor.split()
-        commands.extend(
-            [
-                get_data(os.path.join("tests", test_file)),
-                get_data(os.path.join("tests", test_job_file)),
-            ]
-        )
-        error_code, _, stderr = get_main_output(commands)
-    finally:
-        # 664 in octal, '-rw-rw-r--'
-        assert stat.S_IMODE(os.stat("lsout").st_mode) == 436
-        os.umask(old_umask)  # revert back to original umask
+    commands = factor.split()
+    commands.extend(
+        [
+            "--outdir",
+            str(tmp_path),
+            get_data(os.path.join("tests", test_file)),
+            get_data(os.path.join("tests", test_job_file)),
+        ]
+    )
+    error_code, _, stderr = get_main_output(commands)
     assert "completed success" in stderr
     assert error_code == 0
 
@@ -1550,6 +1550,19 @@ def test_malformed_reqs() -> None:
 def test_arguments_self() -> None:
     """Confirm that $(self) works in the arguments list."""
     factory = cwltool.factory.Factory()
+    if not shutil.which("docker"):
+        if shutil.which("podman"):
+            factory.runtime_context.podman = True
+            factory.loading_context.podman = True
+        elif shutil.which("singularity"):
+            factory.runtime_context.singularity = True
+            factory.loading_context.singularity = True
+        elif not shutil.which("jq"):
+            pytest.skip(
+                "Need a container engine (docker, podman, or signularity) or jq to run this test."
+            )
+        else:
+            factory.runtime_context.use_container = False
     check = factory.make(get_data("tests/wf/paramref_arguments_self.cwl"))
     outputs = cast(Dict[str, Any], check())
     assert "self_review" in outputs
@@ -1588,3 +1601,22 @@ def test_bad_networkaccess_expr() -> None:
         "Got '42' for expression '${return 42;}" in stderr
     )
     assert err_code == 1
+
+
+def test_staging_files_in_any() -> None:
+    """Confirm that inputs of type File are staged, even if the schema is Any."""
+    err_code, _, stderr = get_main_output(
+        [get_data("tests/wf/816_wf.cwl"), "--file", get_data("tests/echo-job.yaml")]
+    )
+    assert err_code == 0
+
+
+def test_custom_type_in_step_process() -> None:
+    """Test that any needed custom types are available when processing a WorkflowStep."""
+    err_code, _, stderr = get_main_output(
+        [
+            get_data("tests/wf/811.cwl"),
+            get_data("tests/wf/811_inputs.yml"),
+        ]
+    )
+    assert err_code == 0

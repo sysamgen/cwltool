@@ -697,6 +697,12 @@ class Process(HasReqsHints, metaclass=abc.ABCMeta):
             )
             make_avsc_object(convert_to_dict(self.outputs_record_schema), self.names)
 
+        self.container_engine = "docker"
+        if loadingContext.podman:
+            self.container_engine = "podman"
+        elif loadingContext.singularity:
+            self.container_engine = "singularity"
+
         if toolpath_object.get("class") is not None and not getdefault(
             loadingContext.disable_js_validation, False
         ):
@@ -722,6 +728,7 @@ class Process(HasReqsHints, metaclass=abc.ABCMeta):
                     toolpath_object,
                     self.doc_schema.names[avroname],
                     validate_js_options,
+                    self.container_engine,
                 )
 
         dockerReq, is_req = self.get_requirement("DockerRequirement")
@@ -903,6 +910,7 @@ hints:
             tmpdir,
             stagedir,
             cwl_version,
+            self.container_engine,
         )
 
         bindings.extend(
@@ -966,7 +974,7 @@ hints:
 
     def evalResources(
         self, builder: Builder, runtimeContext: RuntimeContext
-    ) -> Dict[str, Union[int, float, str]]:
+    ) -> Dict[str, Union[int, float]]:
         resourceReq, _ = self.get_requirement("ResourceRequirement")
         if resourceReq is None:
             resourceReq = {}
@@ -1010,19 +1018,14 @@ hints:
                 request[a + "Min"] = mn
                 request[a + "Max"] = cast(Union[int, float], mx)
 
+        request_evaluated = cast(Dict[str, Union[int, float]], request)
         if runtimeContext.select_resources is not None:
-            return runtimeContext.select_resources(request, runtimeContext)
+            return runtimeContext.select_resources(request_evaluated, runtimeContext)
         return {
-            "cores": request["coresMin"],
-            "ram": math.ceil(request["ramMin"])
-            if not isinstance(request["ramMin"], str)
-            else request["ramMin"],
-            "tmpdirSize": math.ceil(request["tmpdirMin"])
-            if not isinstance(request["tmpdirMin"], str)
-            else request["tmpdirMin"],
-            "outdirSize": math.ceil(request["outdirMin"])
-            if not isinstance(request["outdirMin"], str)
-            else request["outdirMin"],
+            "cores": request_evaluated["coresMin"],
+            "ram": math.ceil(request_evaluated["ramMin"]),
+            "tmpdirSize": math.ceil(request_evaluated["tmpdirMin"]),
+            "outdirSize": math.ceil(request_evaluated["outdirMin"]),
         }
 
     def validate_hints(

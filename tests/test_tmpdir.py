@@ -42,7 +42,10 @@ def test_docker_commandLineTool_job_tmpdir_prefix(tmp_path: Path) -> None:
                     "inputs": [],
                     "outputs": [],
                     "requirements": [
-                        {"class": "DockerRequirement", "dockerPull": "debian:stable"}
+                        {
+                            "class": "DockerRequirement",
+                            "dockerPull": "docker.io/debian:stable",
+                        }
                     ],
                 }
             ),
@@ -160,6 +163,7 @@ def test_docker_tmpdir_prefix(tmp_path: Path) -> None:
         runtime_context.get_tmpdir(),
         runtime_context.get_stagedir(),
         INTERNAL_VERSION,
+        "docker",
     )
     job = DockerCommandLineJob(builder, {}, PathMapper, [], [], "")
     runtime: List[str] = []

@@ -60,7 +60,7 @@ from .load_tool import (
     resolve_overrides,
     resolve_tool_uri,
 )
-from .loghandler import _logger, defaultStreamHandler
+from .loghandler import _logger, configure_logging, defaultStreamHandler
 from .mpi import MpiConfig
 from .mutation import MutationManager
 from .pack import pack
@@ -239,9 +239,9 @@ def generate_example_input(
 
 
 def realize_input_schema(
-    input_types: MutableSequence[CWLObjectType],
+    input_types: MutableSequence[Union[str, CWLObjectType]],
     schema_defs: MutableMapping[str, CWLObjectType],
-) -> MutableSequence[CWLObjectType]:
+) -> MutableSequence[Union[str, CWLObjectType]]:
     """Replace references to named typed with the actual types."""
     for index, entry in enumerate(input_types):
         if isinstance(entry, str):
@@ -251,32 +251,33 @@ def realize_input_schema(
                 input_type_name = entry
             if input_type_name in schema_defs:
                 entry = input_types[index] = schema_defs[input_type_name]
-        if isinstance(entry, Mapping):
+        if isinstance(entry, MutableMapping):
             if isinstance(entry["type"], str) and "#" in entry["type"]:
                 _, input_type_name = entry["type"].split("#")
                 if input_type_name in schema_defs:
-                    input_types[index]["type"] = cast(
+                    entry["type"] = cast(
                         CWLOutputAtomType,
                         realize_input_schema(
                             cast(
-                                MutableSequence[CWLObjectType],
+                                MutableSequence[Union[str, CWLObjectType]],
                                 schema_defs[input_type_name],
                             ),
                             schema_defs,
                         ),
                     )
             if isinstance(entry["type"], MutableSequence):
-                input_types[index]["type"] = cast(
+                entry["type"] = cast(
                     CWLOutputAtomType,
                     realize_input_schema(
-                        cast(MutableSequence[CWLObjectType], entry["type"]), schema_defs
+                        cast(MutableSequence[Union[str, CWLObjectType]], entry["type"]),
+                        schema_defs,
                     ),
                 )
             if isinstance(entry["type"], Mapping):
-                input_types[index]["type"] = cast(
+                entry["type"] = cast(
                     CWLOutputAtomType,
                     realize_input_schema(
-                        [cast(CWLObjectType, input_types[index]["type"])], schema_defs
+                        [cast(CWLObjectType, entry["type"])], schema_defs
                     ),
                 )
             if entry["type"] == "array":
@@ -285,17 +286,20 @@ def realize_input_schema(
                     if not isinstance(entry["items"], str)
                     else [entry["items"]]
                 )
-                input_types[index]["items"] = cast(
+                entry["items"] = cast(
                     CWLOutputAtomType,
                     realize_input_schema(
-                        cast(MutableSequence[CWLObjectType], items), schema_defs
+                        cast(MutableSequence[Union[str, CWLObjectType]], items),
+                        schema_defs,
                     ),
                 )
             if entry["type"] == "record":
-                input_types[index]["fields"] = cast(
+                entry["fields"] = cast(
                     CWLOutputAtomType,
                     realize_input_schema(
-                        cast(MutableSequence[CWLObjectType], entry["fields"]),
+                        cast(
+                            MutableSequence[Union[str, CWLObjectType]], entry["fields"]
+                        ),
                         schema_defs,
                     ),
                 )
@@ -305,8 +309,11 @@ def realize_input_schema(
 def generate_input_template(tool: Process) -> CWLObjectType:
     """Generate an example input object for the given CWL process."""
     template = ruamel.yaml.comments.CommentedMap()
-    for inp in realize_input_schema(tool.tool["inputs"], tool.schemaDefs):
-        name = shortname(cast(str, inp["id"]))
+    for inp in cast(
+        List[MutableMapping[str, str]],
+        realize_input_schema(tool.tool["inputs"], tool.schemaDefs),
+    ):
+        name = shortname(inp["id"])
         value, comment = generate_example_input(inp["type"], inp.get("default", None))
         template.insert(0, name, value, comment)
     return template
@@ -454,7 +461,7 @@ def init_job_order(
                 job_order_object = {}
             job_order_object[shortname(inp["id"])] = inp["default"]
 
-    if job_order_object is None:
+    if len(job_order_object) == 0:
         if process.tool["inputs"]:
             if toolparser is not None:
                 print(f"\nOptions for {args.workflow} ")
@@ -624,31 +631,6 @@ def supported_cwl_versions(enable_dev: bool) -> List[str]:
     return versions
 
 
-def configure_logging(
-    args: argparse.Namespace,
-    stderr_handler: logging.Handler,
-    runtimeContext: RuntimeContext,
-) -> None:
-    rdflib_logger = logging.getLogger("rdflib.term")
-    rdflib_logger.addHandler(stderr_handler)
-    rdflib_logger.setLevel(logging.ERROR)
-    if args.quiet:
-        # Silence STDERR, not an eventual provenance log file
-        stderr_handler.setLevel(logging.WARN)
-    if runtimeContext.debug:
-        # Increase to debug for both stderr and provenance log file
-        _logger.setLevel(logging.DEBUG)
-        stderr_handler.setLevel(logging.DEBUG)
-        rdflib_logger.setLevel(logging.DEBUG)
-    fmtclass = coloredlogs.ColoredFormatter if args.enable_color else logging.Formatter
-    formatter = fmtclass("%(levelname)s %(message)s")
-    if args.timestamps:
-        formatter = fmtclass(
-            "[%(asctime)s] %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"
-        )
-    stderr_handler.setFormatter(formatter)
-
-
 def setup_schema(
     args: argparse.Namespace, custom_schema_callback: Optional[Callable[[], None]]
 ) -> None:
@@ -722,8 +704,11 @@ def setup_loadingContext(
     runtimeContext: RuntimeContext,
     args: argparse.Namespace,
 ) -> LoadingContext:
+    """Prepare a LoadingContext from the given arguments."""
     if loadingContext is None:
         loadingContext = LoadingContext(vars(args))
+        loadingContext.singularity = runtimeContext.singularity
+        loadingContext.podman = runtimeContext.podman
     else:
         loadingContext = loadingContext.copy()
     loadingContext.loader = default_loader(
@@ -965,7 +950,13 @@ def main(
             if not hasattr(args, key):
                 setattr(args, key, val)
 
-        configure_logging(args, stderr_handler, runtimeContext)
+        configure_logging(
+            stderr_handler,
+            args.quiet,
+            runtimeContext.debug,
+            args.enable_color,
+            args.timestamps,
+        )
 
         if args.version:
             print(versionfunc())
@@ -1293,12 +1284,7 @@ def main(
                 # Unsetting the Generation from final output object
                 visit_class(out, ("File",), MutationManager().unset_generation)
 
-                if isinstance(out, str):
-                    stdout.write(out)
-                else:
-                    stdout.write(
-                        json_dumps(out, indent=4, ensure_ascii=False, default=str)
-                    )
+                stdout.write(json_dumps(out, indent=4, ensure_ascii=False, default=str))
                 stdout.write("\n")
                 if hasattr(stdout, "flush"):
                     stdout.flush()

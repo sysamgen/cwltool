@@ -164,7 +164,7 @@ class Builder(HasReqsHints):
         names: Names,
         requirements: List[CWLObjectType],
         hints: List[CWLObjectType],
-        resources: Dict[str, Union[int, float, str]],
+        resources: Dict[str, Union[int, float]],
         mutation_manager: Optional[MutationManager],
         formatgraph: Optional[Graph],
         make_fs_access: Type[StdFsAccess],
@@ -179,8 +179,10 @@ class Builder(HasReqsHints):
         tmpdir: str,
         stagedir: str,
         cwlVersion: str,
+        container_engine: str,
     ) -> None:
         """Initialize this Builder."""
+        super().__init__()
         self.job = job
         self.files = files
         self.bindings = bindings
@@ -215,6 +217,7 @@ class Builder(HasReqsHints):
         self.pathmapper = None  # type: Optional[PathMapper]
         self.prov_obj = None  # type: Optional[ProvenanceProfile]
         self.find_default_container = None  # type: Optional[Callable[[], str]]
+        self.container_engine = container_engine
 
     def build_job_script(self, commands: List[str]) -> Optional[str]:
         if self.job_script_provider is not None:
@@ -344,6 +347,22 @@ class Builder(HasReqsHints):
                     )
                 )
         else:
+            if schema["type"] == "org.w3id.cwl.salad.Any":
+                if isinstance(datum, dict):
+                    if datum.get("class") == "File":
+                        schema["type"] = "org.w3id.cwl.cwl.File"
+                    elif datum.get("class") == "Directory":
+                        schema["type"] = "org.w3id.cwl.cwl.Directory"
+                    else:
+                        schema["type"] = "record"
+                        schema["fields"] = [
+                            {"name": field_name, "type": "Any"}
+                            for field_name in datum.keys()
+                        ]
+                elif isinstance(datum, list):
+                    schema["type"] = "array"
+                    schema["items"] = "Any"
+
             if schema["type"] in self.schemaDefs:
                 schema = self.schemaDefs[cast(str, schema["type"])]
 
@@ -424,7 +443,13 @@ class Builder(HasReqsHints):
                 if "secondaryFiles" in schema:
                     if "secondaryFiles" not in datum:
                         datum["secondaryFiles"] = []
-                    for num, sf_entry in enumerate(aslist(schema["secondaryFiles"])):
+                        sf_schema = aslist(schema["secondaryFiles"])
+                    elif not discover_secondaryFiles:
+                        sf_schema = []  # trust the inputs
+                    else:
+                        sf_schema = aslist(schema["secondaryFiles"])
+
+                    for num, sf_entry in enumerate(sf_schema):
                         if "required" in sf_entry and sf_entry["required"] is not None:
                             required_result = self.do_eval(
                                 sf_entry["required"], context=datum
@@ -433,15 +458,10 @@ class Builder(HasReqsHints):
                                 isinstance(required_result, bool)
                                 or required_result is None
                             ):
-                                if (
-                                    aslist(schema["secondaryFiles"])
-                                    == schema["secondaryFiles"]
-                                ):
-                                    sf_item: Any = cast(
-                                        List[Any], schema["secondaryFiles"]
-                                    )[num]
+                                if sf_schema == schema["secondaryFiles"]:
+                                    sf_item: Any = sf_schema[num]
                                 else:
-                                    sf_item = schema["secondaryFiles"]
+                                    sf_item = sf_schema
                                 raise SourceLine(
                                     sf_item, "required", WorkflowException, debug
                                 ).makeError(
@@ -712,9 +732,8 @@ class Builder(HasReqsHints):
         resources = self.resources
         if self.resources and "cores" in self.resources:
             cores = resources["cores"]
-            if not isinstance(cores, str):
-                resources = copy.copy(resources)
-                resources["cores"] = int(math.ceil(cores))
+            resources = copy.copy(resources)
+            resources["cores"] = int(math.ceil(cores))
 
         return expression.do_eval(
             ex,
@@ -730,4 +749,5 @@ class Builder(HasReqsHints):
             force_docker_pull=self.force_docker_pull,
             strip_whitespace=strip_whitespace,
             cwlVersion=self.cwlVersion,
+            container_engine=self.container_engine,
         )

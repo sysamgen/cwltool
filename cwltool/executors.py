@@ -33,7 +33,7 @@ from .process import Process, cleanIntermediate, relocateOutputs
 from .provenance_profile import ProvenanceProfile
 from .task_queue import TaskQueue
 from .update import ORIGINAL_CWLVERSION
-from .utils import CWLObjectType, JobsType
+from .utils import CWLObjectType, CWLOutputType, JobsType
 from .workflow import Workflow
 from .workflow_job import WorkflowJob, WorkflowJobStep
 
@@ -283,35 +283,26 @@ class MultithreadedJobExecutor(JobExecutor):
         self.allocated_cores = float(0)
 
     def select_resources(
-        self, request, runtime_context
-    ):  # pylint: disable=unused-argument
-        # type: (Dict[str, Union[int, float, str]], RuntimeContext) -> Dict[str, Union[int, float, str]]
+        self, request: Dict[str, Union[int, float]], runtime_context: RuntimeContext
+    ) -> Dict[str, Union[int, float]]:  # pylint: disable=unused-argument
         """Naïve check for available cpu cores and memory."""
-        result = {}  # type: Dict[str, Union[int, float, str]]
+        result: Dict[str, Union[int, float]] = {}
         maxrsc = {"cores": self.max_cores, "ram": self.max_ram}
         for rsc in ("cores", "ram"):
             rsc_min = request[rsc + "Min"]
-            if not isinstance(rsc_min, str) and rsc_min > maxrsc[rsc]:
+            if rsc_min > maxrsc[rsc]:
                 raise WorkflowException(
-                    "Requested at least %d %s but only %d available"
-                    % (rsc_min, rsc, maxrsc[rsc])
+                    f"Requested at least {rsc_min} {rsc} but only "
+                    f"{maxrsc[rsc]} available"
                 )
             rsc_max = request[rsc + "Max"]
-            if not isinstance(rsc_max, str) and rsc_max < maxrsc[rsc]:
+            if rsc_max < maxrsc[rsc]:
                 result[rsc] = math.ceil(rsc_max)
             else:
                 result[rsc] = maxrsc[rsc]
 
-        result["tmpdirSize"] = (
-            math.ceil(request["tmpdirMin"])
-            if not isinstance(request["tmpdirMin"], str)
-            else request["tmpdirMin"]
-        )
-        result["outdirSize"] = (
-            math.ceil(request["outdirMin"])
-            if not isinstance(request["outdirMin"], str)
-            else request["outdirMin"]
-        )
+        result["tmpdirSize"] = math.ceil(request["tmpdirMin"])
+        result["outdirSize"] = math.ceil(request["outdirMin"])
 
         return result
 
@@ -336,11 +327,9 @@ class MultithreadedJobExecutor(JobExecutor):
                 with runtime_context.workflow_eval_lock:
                     if isinstance(job, JobBase):
                         ram = job.builder.resources["ram"]
-                        if not isinstance(ram, str):
-                            self.allocated_ram -= ram
+                        self.allocated_ram -= ram
                         cores = job.builder.resources["cores"]
-                        if not isinstance(cores, str):
-                            self.allocated_cores -= cores
+                        self.allocated_cores -= cores
                     runtime_context.workflow_eval_lock.notifyAll()
 
     def run_job(
@@ -364,9 +353,7 @@ class MultithreadedJobExecutor(JobExecutor):
                 if isinstance(job, JobBase):
                     ram = job.builder.resources["ram"]
                     cores = job.builder.resources["cores"]
-                    if (not isinstance(ram, str) and ram > self.max_ram) or (
-                        not isinstance(cores, str) and cores > self.max_cores
-                    ):
+                    if ram > self.max_ram or cores > self.max_cores:
                         _logger.error(
                             'Job "%s" cannot be run, requests more resources (%s) '
                             "than available on this host (max ram %d, max cores %d",
@@ -381,11 +368,8 @@ class MultithreadedJobExecutor(JobExecutor):
                         return
 
                     if (
-                        not isinstance(ram, str)
-                        and self.allocated_ram + ram > self.max_ram
-                    ) or (
-                        not isinstance(cores, str)
-                        and self.allocated_cores + cores > self.max_cores
+                        self.allocated_ram + ram > self.max_ram
+                        or self.allocated_cores + cores > self.max_cores
                     ):
                         _logger.debug(
                             'Job "%s" cannot run yet, resources (%s) are not '
@@ -403,11 +387,9 @@ class MultithreadedJobExecutor(JobExecutor):
 
                 if isinstance(job, JobBase):
                     ram = job.builder.resources["ram"]
-                    if not isinstance(ram, str):
-                        self.allocated_ram += ram
+                    self.allocated_ram += ram
                     cores = job.builder.resources["cores"]
-                    if not isinstance(cores, str):
-                        self.allocated_cores += cores
+                    self.allocated_cores += cores
                 self.taskqueue.add(
                     functools.partial(self._runner, job, runtime_context, TMPDIR_LOCK),
                     runtime_context.workflow_eval_lock,
