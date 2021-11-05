@@ -153,7 +153,7 @@ def jshint_js(
     returncode, stdout, stderr = exec_js_process(
         "validateJS(%s)"
         % json_dumps({"code": js_text, "options": options, "globals": globals}),
-        timeout=30,
+        timeout=1000,
         context=jshint_functions_text,
     )
 
